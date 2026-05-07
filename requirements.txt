@@ -1,1 +1,9 @@
-
+requests
+pandas
+numpy
+tqdm
+feedparser
+matplotlib
+seaborn
+jupyter
+notebook
