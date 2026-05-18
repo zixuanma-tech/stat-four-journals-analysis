@@ -24,34 +24,54 @@ def calculate_math_dimensions(tex_content):
     # 2. 提取维度一（严格证明）
     proof_envs = r'(proof|theorem|lemma|corollary|proposition)'
     proof_pattern = rf'\\begin\{{{proof_envs}\*?\}}(.*?)\\end\{{\1\*?\}}'
-    proof_matches = re.findall(proof_pattern, clean_tex, flags=re.DOTALL)
+    proof_matches = re.findall(proof_pattern, tex_content, flags=re.DOTALL)
     proof_chars = sum(len(match[1]) for match in proof_matches)
 
     # 3. 提取维度二（公式与设定展示）
-    # (a) 八股文环境
-    display_envs = r'(equation|align|eqnarray|assumption|condition)'
-    env_pattern = rf'\\begin\{{{display_envs}\*?\}}(.*?)\\end\{{\1\*?\}}'
-    env_matches = re.findall(env_pattern, clean_tex, flags=re.DOTALL)
-    env_chars = sum(len(match[1]) for match in env_matches)
-    
-    # (b) 双美元符号独立公式 $$ ... $$
-    dollar_pattern = r'\$\$(.*?)\$\$'
-    dollar_matches = re.findall(dollar_pattern, clean_tex, flags=re.DOTALL)
-    dollar_chars = sum(len(match) for match in dollar_matches)
-    
-    # (c) 斜杠方括号独立公式 \[ ... \]
-    bracket_pattern = r'\\\[(.*?)\\\]'
-    bracket_matches = re.findall(bracket_pattern, clean_tex, flags=re.DOTALL)
-    bracket_chars = sum(len(match) for match in bracket_matches)
+    broad_math_chars = 0
+    # 建立一个临时文本，用于“剥洋葱”式的挖空
+    temp_tex = tex_content
 
-    total_display_chars = env_chars + dollar_chars + bracket_chars
+    # 1. 提取所有宏包支持的数学环境 (包含你原有的 condition/assumption，并补充了 gather 等常见公式环境)
+    broad_envs = r'(equation|align|eqnarray|gather|multline|math|displaymath|assumption|condition)'
+    env_pattern = rf'\\begin\{{{broad_envs}\*?\}}(.*?)\\end\{{\1\*?\}}'
+    
+    env_matches = re.findall(env_pattern, temp_tex, flags=re.DOTALL)
+    # env_matches 返回的是包含元组的列表，元组的第二个元素 match[1] 是里面的内容
+    broad_math_chars += sum(len(match[1]) for match in env_matches)
+    
+    # 【关键步】：提取完后，把这些环境从文本中彻底删掉，防止后续重复匹配
+    temp_tex = re.sub(env_pattern, '', temp_tex, flags=re.DOTALL)
+
+    # 2. 提取斜杠方括号独立公式 \[ ... \]
+    bracket_display_pattern = r'\\\[(.*?)\\\]'
+    matches = re.findall(bracket_display_pattern, temp_tex, flags=re.DOTALL)
+    broad_math_chars += sum(len(m) for m in matches)
+    temp_tex = re.sub(bracket_display_pattern, '', temp_tex, flags=re.DOTALL)
+
+    # 3. 提取斜杠圆括号行内公式 \( ... \) （这也是标准的 LaTeX 行内公式写法）
+    bracket_inline_pattern = r'\\\((.*?)\\\)'
+    matches = re.findall(bracket_inline_pattern, temp_tex, flags=re.DOTALL)
+    broad_math_chars += sum(len(m) for m in matches)
+    temp_tex = re.sub(bracket_inline_pattern, '', temp_tex, flags=re.DOTALL)
+
+    # 4. 提取双美元符号独立公式 $$ ... $$
+    dd_pattern = r'\$\$(.*?)\$\$'
+    matches = re.findall(dd_pattern, temp_tex, flags=re.DOTALL)
+    broad_math_chars += sum(len(m) for m in matches)
+    temp_tex = re.sub(dd_pattern, '', temp_tex, flags=re.DOTALL)
+
+    # 5. 提取单美元符号行内公式 $ ... $
+    d_pattern = r'\$(.*?)\$'
+    matches = re.findall(d_pattern, temp_tex, flags=re.DOTALL)
+    broad_math_chars += sum(len(m) for m in matches)
 
     return {
         "total_valid_chars": total_chars,
-        "proof_chars": proof_chars,
-        "proof_density": round(proof_chars / total_chars, 4),
-        "display_chars": total_display_chars,
-        "display_density": round(total_display_chars / total_chars, 4)
+        "exact_math_chars": proof_chars,
+        "exact_math_density": round(proof_chars / total_chars, 4),
+        "broad_math_chars": broad_math_chars,
+        "broad_math_density": round(broad_math_chars / total_chars, 4)
     }
 
 # ==========================================
@@ -82,7 +102,7 @@ def merge_tex_from_tar(tar_path):
 if __name__ == "__main__":
     # 配置路径
     SOURCE_DIR = r"C:\Users\34098\WPSDrive\1732268580\WPS企业云盘\清华大学\我的企业文档\统计四大latex源码"
-    OUTPUT_CSV = "latex_features_results.csv" # 结果保存的文件名
+    OUTPUT_CSV = "all_latex_features_results.csv" # 结果保存的文件名
     
     print("开始批量清洗与特征提取任务...\n")
     
@@ -108,7 +128,7 @@ if __name__ == "__main__":
                 stats['paper_id'] = paperid
                 results_list.append(stats)
                 
-                print(f"[+] 处理成功: {paperid} | 证明占比: {stats['proof_density']:.2%} | 公式展示占比: {stats['display_density']:.2%}")
+                print(f"[+] 处理成功: {paperid} | 证明占比: {stats['exact_math_density']:.2%} | 公式展示占比: {stats['broad_math_density']:.2%}")
                 success_count += 1
             else:
                 print(f"[-] 跳过: {paperid} (未找到有效的 .tex 内容)")
@@ -120,7 +140,7 @@ if __name__ == "__main__":
     if results_list:
         df_results = pd.DataFrame(results_list)
         # 调整列的顺序，把 paper_id 放在第一列好看一些
-        cols = ['paper_id', 'total_valid_chars', 'proof_chars', 'proof_density', 'display_chars', 'display_density']
+        cols = ['paper_id', 'total_valid_chars', 'exact_math_chars', 'exact_math_density', 'broad_math_chars', 'broad_math_density']
         df_results = df_results[cols]
         
         df_results.to_csv(OUTPUT_CSV, index=False)
