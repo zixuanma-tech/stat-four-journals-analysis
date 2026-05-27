@@ -5,30 +5,15 @@ import requests
 import pandas as pd
 
 
-# Four statistics journals metadata crawler
-# Range: 2023-2026
-# Current version: metadata + citations + authors + institutions + OpenAlex topics
-
 START_YEAR = 2023
-END_YEAR = 2026
+END_YEAR = 2026 
+# 设置变量方便调试和修改
 
 JOURNALS = [
-    {
-        "short": "AOS",
-        "name": "The Annals of Statistics",
-    },
-    {
-        "short": "BIO",
-        "name": "Biometrika",
-    },
-    {
-        "short": "JASA",
-        "name": "Journal of the American Statistical Association",
-    },
-    {
-        "short": "JRSSB",
-        "name": "Journal of the Royal Statistical Society Series B Statistical Methodology",
-    },
+    {"short": "AOS", "name": "The Annals of Statistics"},
+    {"short": "BIO", "name": "Biometrika"},
+    {"short": "JASA", "name": "Journal of the American Statistical Association"},
+    {"short": "JRSSB", "name": "Journal of the Royal Statistical Society Series B Statistical Methodology"},
 ]
 
 OPENALEX_SOURCES_URL = "https://api.openalex.org/sources"
@@ -37,18 +22,18 @@ OPENALEX_WORKS_URL = "https://api.openalex.org/works"
 OUTPUT_PATH = f"data_sample/stat4_{START_YEAR}_{END_YEAR}_metadata.csv"
 
 OPENALEX_API_KEY = os.getenv("OPENALEX_API_KEY")
-
 ITEM_SEP = " | "
+# 设置分隔符方便阅读
 
 
-def add_openalex_key(params):
+def key(params):
     if OPENALEX_API_KEY:
         params["api_key"] = OPENALEX_API_KEY
     return params
 
 
-def get_json(url, params, sleep_seconds=1.0, max_retries=5):
-    params = add_openalex_key(params)
+def json(url, params, sleep_seconds=1.0, max_retries=5):
+    params = key(params)
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -57,60 +42,53 @@ def get_json(url, params, sleep_seconds=1.0, max_retries=5):
 
             if response.status_code == 429:
                 wait_time = 30 * attempt
-                print(f"OpenAlex 429: too many requests. Sleep {wait_time} seconds.")
+                print(f"429 Too Many Requests. Sleep {wait_time} seconds.")
                 time.sleep(wait_time)
                 continue
 
             if response.status_code >= 500:
                 wait_time = 20 * attempt
-                print(f"OpenAlex server error. Sleep {wait_time} seconds.")
+                print(f"Server error. Sleep {wait_time} seconds.")
                 time.sleep(wait_time)
                 continue
 
-            response.raise_for_status()
+            response.status()
             time.sleep(sleep_seconds)
             return response.json()
 
         except requests.exceptions.RequestException as e:
             wait_time = 20 * attempt
-            print(f"OpenAlex request failed on attempt {attempt}/{max_retries}: {e}")
-            print(f"Sleep {wait_time} seconds and retry.")
+            print(f"Request failed: attempt {attempt}/{max_retries}")
+            print(e)
+            print(f"Sleep {wait_time} seconds.")
             time.sleep(wait_time)
 
-    raise RuntimeError("OpenAlex request failed after maximum retries.")
+    raise RuntimeError("OpenAlex request failed too many times.")
+# 由于抓取数据过多，故异常情况时有发生，需纳入考虑
 
-
-def get_names_and_count(items):
-    if not isinstance(items, list):
+def namescount(items):
+    if items is None:
         return "", 0
 
     names = []
 
     for item in items:
-        if isinstance(item, dict):
-            name = (
-                item.get("display_name")
-                or item.get("name")
-                or item.get("keyword")
-            )
-            if name:
-                names.append(str(name))
+        name = item.get("display_name")
+        if name:
+            names.append(name)
 
     names = sorted(set(names))
     return ITEM_SEP.join(names), len(names)
 
 
-def find_source_id(journal_name):
+def id(journal_name):
     params = {
         "search": journal_name,
         "per-page": 5,
     }
 
-    data = get_json(OPENALEX_SOURCES_URL, params)
-    results = data.get("results", [])
-
-    if not results:
-        raise ValueError(f"No source candidates found for {journal_name}")
+    data = json(OPENALEX_SOURCES_URL, params)
+    results = data["results"]
 
     print(f"\nsource candidates for {journal_name}:")
     for i, source in enumerate(results):
@@ -119,59 +97,67 @@ def find_source_id(journal_name):
     target = journal_name.lower()
 
     for source in results:
-        display_name = (source.get("display_name") or "").lower()
-        if target in display_name or display_name in target:
-            print("selected source:", source.get("display_name"), source.get("id"))
-            return source.get("id"), source.get("display_name")
+        display_name = source["display_name"]
+        display_name_lower = display_name.lower()
+
+        if target in display_name_lower or display_name_lower in target:
+            print("selected source:", display_name, source["id"])
+            return source["id"], display_name
 
     selected = results[0]
-    print("selected by fallback:", selected.get("display_name"), selected.get("id"))
-    return selected.get("id"), selected.get("display_name")
+    print("selected by first result:", selected["display_name"], selected["id"])
+    return selected["id"], selected["display_name"]
 
 
-def parse_work(work, journal_short):
-    authorships = work.get("authorships") or []
-
+def parse(work, journal_short):
     author_names = []
     author_ids = []
     institution_names = []
 
-    for authorship in authorships:
-        author = authorship.get("author") or {}
+    for authorship in work["authorships"]:
+        author = authorship["author"]
 
         author_name = author.get("display_name")
         author_id = author.get("id")
 
         if author_name:
             author_names.append(author_name)
+
         if author_id:
             author_ids.append(author_id)
 
-        institutions = authorship.get("institutions") or []
-        for inst in institutions:
-            inst_name = inst.get("display_name")
-            if inst_name:
-                institution_names.append(inst_name)
+        for institution in authorship["institutions"]:
+            institution_name = institution.get("display_name")
+            if institution_name:
+                institution_names.append(institution_name)
 
-    primary_location = work.get("primary_location") or {}
-    source = primary_location.get("source") or {}
-    biblio = work.get("biblio") or {}
+    source = work["primary_location"]["source"]
+    biblio = work["biblio"]
 
     citation_percentile = None
-    citation_obj = work.get("citation_normalized_percentile")
-    if isinstance(citation_obj, dict):
-        value = citation_obj.get("value")
+    citation_info = work.get("citation_normalized_percentile")
+
+    if citation_info is not None:
+        value = citation_info.get("value")
         if value is not None:
-            citation_percentile = value * 100 if value <= 1 else value
+            if value <= 1:
+                citation_percentile = value * 100
+            else:
+                citation_percentile = value
 
-    keywords, keyword_count = get_names_and_count(work.get("keywords"))
-    openalex_topics, topic_count = get_names_and_count(work.get("topics"))
+    keywords, keyword_count = namescount(work.get("keywords"))
+    openalex_topics, topic_count = namescount(work.get("topics"))
 
-    primary_topic_obj = work.get("primary_topic") or {}
-    primary_topic = primary_topic_obj.get("display_name")
-    primary_topic_count = 1 if primary_topic else 0
+    primary_topic_info = work.get("primary_topic")
 
-    return {
+    if primary_topic_info is None:
+        primary_topic = None
+        primary_topic_count = 0
+    else:
+        primary_topic = primary_topic_info.get("display_name")
+        primary_topic_count = 1
+
+    row = {
         "journal_short": journal_short,
         "openalex_work_id": work.get("id"),
         "journal": source.get("display_name"),
@@ -205,67 +191,84 @@ def parse_work(work, journal_short):
         "num_institutions": len(set(institution_names)),
     }
 
+    return row
 
-def fetch_journal_works(source_id, journal_short):
+
+def fetch(source_id, journal_short):
     rows = []
     cursor = "*"
 
     while True:
+        filters = [
+            f"primary_location.source.id:{source_id}",
+            f"from_publication_date:{START_YEAR}-01-01",
+            f"to_publication_date:{END_YEAR}-12-31",
+        ]
+
+        selected_fields = [
+            "id",
+            "doi",
+            "display_name",
+            "type",
+            "publication_year",
+            "publication_date",
+            "biblio",
+            "cited_by_count",
+            "citation_normalized_percentile",
+            "authorships",
+            "primary_location",
+            "keywords",
+            "topics",
+            "primary_topic",
+        ]
+
         params = {
-            "filter": ",".join([
-                f"primary_location.source.id:{source_id}",
-                f"from_publication_date:{START_YEAR}-01-01",
-                f"to_publication_date:{END_YEAR}-12-31",
-            ]),
+            "filter": ",".join(filters),
             "per-page": 100,
             "cursor": cursor,
-            "select": ",".join([
-                "id",
-                "doi",
-                "display_name",
-                "type",
-                "publication_year",
-                "publication_date",
-                "biblio",
-                "cited_by_count",
-                "citation_normalized_percentile",
-                "authorships",
-                "primary_location",
-                "keywords",
-                "topics",
-                "primary_topic",
-            ]),
+            "select": ",".join(selected_fields),
         }
 
-        data = get_json(OPENALEX_WORKS_URL, params)
-        works = data.get("results", [])
+        data = json(OPENALEX_WORKS_URL, params)
+        works = data["results"]
 
-        if not works:
+        if len(works) == 0:
             break
 
         for work in works:
-            rows.append(parse_work(work, journal_short))
+            row = parse(work, journal_short)
+            rows.append(row)
 
-        cursor = data.get("meta", {}).get("next_cursor")
-        if not cursor:
+        cursor = data["meta"]["next_cursor"]
+
+        if cursor is None:
             break
 
     return rows
 
 
-def add_paper_id(df):
+def addid(df):
     df = df.reset_index(drop=True)
 
-    df["paper_id"] = [
-        f"{row['journal_short']}_{int(row['publication_year'])}_{i + 1:04d}"
-        for i, row in df.iterrows()
-    ]
+    paper_ids = []
 
-    cols = ["paper_id"] + [c for c in df.columns if c != "paper_id"]
-    return df[cols]
+    for i, row in df.iterrows():
+        journal_short = row["journal_short"]
+        year = int(row["publication_year"])
+        paper_id = f"{journal_short}_{year}_{i + 1:04d}"
+        paper_ids.append(paper_id)
+
+    df["paper_id"] = paper_ids
+
+    columns = ["paper_id"]
+    for column in df.columns:
+        if column != "paper_id":
+            columns.append(column)
+
+    return df[columns]
 
 
-def save_summary_tables(df):
+def save(df):
     work_type_counts = df["work_type"].value_counts(dropna=False).reset_index()
     work_type_counts.columns = ["work_type", "count"]
     work_type_counts.to_csv(
@@ -296,19 +299,15 @@ def main():
 
     all_rows = []
 
-    print("Step1: finding source ids and fetching works")
+    print("Step 1: fetch OpenAlex metadata")
 
     for journal in JOURNALS:
-        print("\n==============================")
         print("journal:", journal["short"], journal["name"])
 
-        source_id, matched_source_name = find_source_id(journal["name"])
-        print("matched source name:", matched_source_name)
+        source_id, source_name = id(journal["name"])
+        print("matched source:", source_name)
 
-        rows = fetch_journal_works(
-            source_id=source_id,
-            journal_short=journal["short"],
-        )
+        rows = fetch(source_id, journal["short"])
 
         print("fetched rows:", len(rows))
         all_rows.extend(rows)
@@ -316,13 +315,13 @@ def main():
     df = pd.DataFrame(all_rows)
 
     if df.empty:
-        raise ValueError("No works found. Check journal names, source ids, or year range.")
+        raise ValueError("No works found. Check journal names or year range.")
 
-    print("\nStep2: adding paper_id")
-    df = add_paper_id(df)
+    print("\nStep 2: add paper_id")
+    df = addid(df)
 
     df.to_csv(OUTPUT_PATH, index=False, encoding="utf-8-sig")
-    save_summary_tables(df)
+    save(df)
 
     print("\nsaved:", OUTPUT_PATH)
     print("total rows:", len(df))
@@ -335,22 +334,6 @@ def main():
 
     print("\nyear counts:")
     print(df["publication_year"].value_counts(dropna=False).sort_index())
-
-    print("\npreview:")
-    print(df[[
-        "paper_id",
-        "journal_short",
-        "work_type",
-        "publication_year",
-        "volume",
-        "issue",
-        "title",
-        "cited_by_count",
-        "citation_percentile",
-        "keyword_count",
-        "topic_count",
-    ]].head())
-
 
 if __name__ == "__main__":
     main()
